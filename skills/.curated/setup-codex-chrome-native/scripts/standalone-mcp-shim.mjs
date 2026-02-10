@@ -27,7 +27,7 @@ const MCP_ALLOWED_ORIGINS = env.CODEX_MCP_ALLOWED_ORIGINS
  *   request: { tool: string, args: Json, clientId: string, timeoutMs: number },
  *   resolve: (value: { content: Json, isError: boolean }) => void,
  *   reject: (reason: Error) => void,
- *   timeoutId: NodeJS.Timeout
+ *   timeoutId: NodeJS.Timeout | null
  * }} PendingToolRequest
  */
 
@@ -50,7 +50,15 @@ function writeNativeMessage(msg) {
   stdout.write(Buffer.concat([header, json]))
 }
 
+function startRequestTimeout(entry) {
+  if (entry.timeoutId) clearTimeout(entry.timeoutId)
+  entry.timeoutId = setTimeout(() => {
+    failEntry(entry, new Error(`Tool request timed out after ${entry.request.timeoutMs}ms`))
+  }, entry.request.timeoutMs)
+}
+
 function dispatch(entry) {
+  startRequestTimeout(entry)
   writeNativeMessage({
     type: 'tool_request',
     method: 'execute_tool',
@@ -69,13 +77,21 @@ function dispatchNext() {
   dispatch(next)
 }
 
-function failInFlight(error) {
-  if (!inFlight) return
-  const entry = inFlight
-  clearTimeout(entry.timeoutId)
-  inFlight = null
-  entry.reject(error)
-  dispatchNext()
+function failEntry(entry, error) {
+  if (inFlight === entry) {
+    if (entry.timeoutId) clearTimeout(entry.timeoutId)
+    inFlight = null
+    entry.reject(error)
+    dispatchNext()
+    return
+  }
+
+  const queuedIndex = queue.indexOf(entry)
+  if (queuedIndex !== -1) {
+    queue.splice(queuedIndex, 1)
+    if (entry.timeoutId) clearTimeout(entry.timeoutId)
+    entry.reject(error)
+  }
 }
 
 /**
@@ -87,15 +103,11 @@ function failInFlight(error) {
  */
 function sendToolRequest(tool, args, clientId, timeoutMs = TOOL_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      failInFlight(new Error(`Tool request timed out after ${timeoutMs}ms`))
-    }, timeoutMs)
-
     const entry = {
       request: { tool, args, clientId, timeoutMs },
       resolve,
       reject,
-      timeoutId,
+      timeoutId: null,
     }
 
     if (inFlight) {
@@ -113,7 +125,7 @@ function handleToolResponse(msg) {
     return
   }
   const entry = inFlight
-  clearTimeout(entry.timeoutId)
+  if (entry.timeoutId) clearTimeout(entry.timeoutId)
   inFlight = null
   const isError = Boolean(msg.error)
   const content = msg.error?.content ?? msg.result?.content ?? null
