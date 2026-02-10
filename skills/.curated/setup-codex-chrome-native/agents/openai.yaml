@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Chrome Native Setup"
+  short_description: "Set up Codex Chrome native host + MCP"
+  default_prompt: "Use $setup-codex-chrome-native to install and verify the Codex Chrome native host and Codex MCP connection."
